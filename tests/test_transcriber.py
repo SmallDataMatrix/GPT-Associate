@@ -42,6 +42,19 @@ def test_gpt_transcribe_gets_keywords():
     }
 
 
+def test_failed_transcription_is_reported(settings):
+    recorder = Recorder()
+    transcriber = Transcriber("them", settings, recorder)
+    transcriber._handle({
+        "type": "conversation.item.input_audio_transcription.failed", "item_id": "x",
+        "error": {"code": "credit_balance_exhausted", "message": "You have no credits remaining."},
+    })
+    assert recorder.events == [
+        ("on_final", "them", "x", ""),
+        ("on_stt_error", "them", "You have no credits remaining."),
+    ]
+
+
 def test_relays_audio_dispatches_events_and_reconnects(settings):
     async def run():
         received = []

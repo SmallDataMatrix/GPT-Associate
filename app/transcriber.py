@@ -171,6 +171,9 @@ class Transcriber:
         elif kind == "conversation.item.input_audio_transcription.failed":
             log.warning("%s transcription failed: %s", self.source, event.get("error"))
             self.handler.on_final(self.source, item_id, "")
+            # Show it on the page too: otherwise a quota or model problem looks like "listening" with no text.
+            message = (event.get("error") or {}).get("message") or "Transcription failed"
+            self.handler.on_stt_error(self.source, message)
         elif kind in ("session.created", "session.updated", "transcription_session.created",
                       "transcription_session.updated"):
             self.handler.on_stt_status(self.source, "listening")
