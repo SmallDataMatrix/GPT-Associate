@@ -64,7 +64,6 @@ class Transcript:
 @dataclass
 class LiveNotes:
     text: str = ""
-    manual: list[str] = field(default_factory=list)
     seen: set[str] = field(default_factory=set)
     last_update: float = field(default_factory=time.time)
     running: bool = False
@@ -83,12 +82,7 @@ class LiveNotes:
         self.last_update = now
 
     def render(self) -> str:
-        parts = []
-        if self.text:
-            parts.append(f"# Live notes from this meeting\n\n{self.text}")
-        if self.manual:
-            parts.append("# Facts I added during the meeting\n\n" + "\n".join(f"- {n}" for n in self.manual))
-        return "\n\n".join(parts)
+        return f"# Live notes from this meeting\n\n{self.text}" if self.text else ""
 
     def public(self) -> dict:
-        return {"text": self.text, "manual": self.manual}
+        return {"text": self.text}

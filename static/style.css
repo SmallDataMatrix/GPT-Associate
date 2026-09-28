@@ -141,8 +141,12 @@ h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: 
 .notes { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 12px; }
 .notes summary { cursor: pointer; font-weight: 600; }
 .notes pre { white-space: pre-wrap; font: 13px/1.45 inherit; font-family: inherit; margin: 8px 0; }
-#manual-notes { margin: 0 0 8px; padding-left: 18px; font-size: 13px; }
-#note-input { width: 100%; }
+
+.cn-digest { background: var(--panel); border: 1px solid var(--accent); border-radius: var(--radius); padding: 10px 12px; font-size: 14px; }
+.cn-digest h2 { margin: 0 0 6px; color: var(--accent); }
+.cn-digest p { margin: 0 0 6px; }
+.cn-digest ul { margin: 4px 0 0; padding-left: 20px; }
+.cn-digest li { margin: 2px 0; }
 
 .ask { position: fixed; left: 0; right: 0; bottom: 0; display: flex; gap: 8px; padding: 10px 16px calc(10px + env(safe-area-inset-bottom)); background: var(--panel); border-top: 1px solid var(--border); z-index: 5; }
 .ask input { flex: 1; font-size: 16px; }

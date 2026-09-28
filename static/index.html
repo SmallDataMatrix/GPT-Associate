@@ -77,13 +77,15 @@
       <div id="cards"><p class="empty">Answers appear here. Ask something below, press Answer now, or start listening.</p></div>
     </section>
     <section class="side">
+      <div class="cn-digest" id="cn-panel" hidden>
+        <h2>中文提要 <span class="muted">question &amp; key points, auto-updated</span></h2>
+        <div id="cn-content"></div>
+      </div>
       <h2>Live transcript</h2>
       <div id="transcript" class="transcript"><div id="segs"></div><div id="parts"></div></div>
       <details class="notes" id="notes-panel">
-        <summary>Live notes <span class="muted">(updated from the conversation)</span></summary>
+        <summary>Live notes <span class="muted">(updated automatically from the conversation)</span></summary>
         <pre id="notes"></pre>
-        <ul id="manual-notes"></ul>
-        <form id="note-form"><input id="note-input" placeholder="Add a fact for the assistant, then press Enter" autocomplete="off"></form>
       </details>
     </section>
   </main>

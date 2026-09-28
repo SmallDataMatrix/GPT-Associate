@@ -28,7 +28,9 @@ log = logging.getLogger(__name__)
 
 ASKING = {"them", "room"}  # sources whose questions get answered
 TURN_GAP_S = 5.0  # silence that ends the other side's turn
-CONTINUE_WINDOW_S = 2.5  # speech resuming this soon after the question restarts its answer with the full question
+CONTINUE_WINDOW_S = 3.0  # speech resuming this soon after the question restarts its answer with the full question,
+# whether or not the previous answer already finished streaming: a fast model can finish before the
+# rest of a multi-part question is even asked, so "still generating" is not a safe signal to gate on.
 DEDUPE_WINDOW_S = 10.0
 ECHO_WINDOW_S = 8.0
 MAX_QUESTION_CHARS = 800
@@ -152,6 +154,8 @@ class MeetingSession:
         self._last_question = ("", 0.0)
         self._dirty = False
         self._usage_sent = None
+        self.cn = ""  # latest Chinese digest of the current question and answer
+        self._cn_gen = 0
 
     # Helpers ---------------------------------------------------------------------
 
@@ -193,6 +197,7 @@ class MeetingSession:
             "partials": [{"id": k, **v} for k, v in self.partials.items()],
             "cards": [c.public() for c in self.cards[-60:]],
             "notes": self.notes.public(),
+            "cn": self.cn,
             "auto": self.auto_answer,
             "usage": self.usage.public(),
             "profile": self.profile_info(),
@@ -263,8 +268,8 @@ class MeetingSession:
             return
         latest = next((c for c in reversed(self.cards) if c.source == "auto"), None)
         same_turn = latest is not None and latest.turn_no == self.turn_no
-        if same_turn and latest.id in self._tasks and seg.t - latest.t0 <= CONTINUE_WINDOW_S:
-            self._restart(latest, t0)  # they kept talking right after the question: answer the whole thing
+        if same_turn and seg.t - latest.t0 <= CONTINUE_WINDOW_S:
+            self._restart(latest, t0)  # they kept talking right after the question: answer the whole thing so far
         elif is_question(seg.text):
             self._start_auto(latest.turn_end if same_turn else 0, t0)
 
@@ -346,6 +351,7 @@ class MeetingSession:
             if current():
                 card.status = "done"
                 card.done_ms = int((time.time() - card.t0) * 1000)
+                self._maybe_translate(card)
         except asyncio.CancelledError:
             if current() and card.status not in ("done", "error"):
                 card.status = "cancelled"
@@ -384,12 +390,6 @@ class MeetingSession:
         elif kind == "auto":
             self.auto_answer = bool(message.get("value"))
             self.hub.publish({"type": "auto", "value": self.auto_answer})
-        elif kind == "note":
-            text = str(message.get("text", "")).strip()
-            if text:
-                self.notes.manual.append(text)
-                self._dirty = True
-                self.hub.publish({"type": "notes", "notes": self.notes.public()})
         elif kind == "new_meeting":
             await self.new_meeting()
 
@@ -438,7 +438,24 @@ class MeetingSession:
         self._reset()
         self.hub.publish(self.snapshot())
 
-    # Live notes, background, persistence -----------------------------------------
+    # Chinese digest, live notes, background, persistence --------------------------
+
+    def _maybe_translate(self, card: Card) -> None:
+        if not self.answerer.available or card.kind != "answer" or not card.text.strip():
+            return
+        self._cn_gen += 1
+        self._spawn(self._translate(card, self._cn_gen))
+
+    async def _translate(self, card: Card, gen: int) -> None:
+        try:
+            text = await self.answerer.translate_digest(card.question, card.text, usage=self.usage)
+        except Exception:
+            log.exception("chinese digest failed")
+            return
+        if gen == self._cn_gen:  # a newer question came in while this call was in flight: drop it
+            self.cn = text
+            self.hub.publish({"type": "cn", "text": text})
+            self._publish_usage()
 
     def _maybe_update_notes(self) -> None:
         if self.answerer.available and self.notes.due(self.transcript, time.time()):

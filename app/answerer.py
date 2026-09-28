@@ -38,6 +38,15 @@ What I said: claims, numbers and examples I already used, so later answers stay 
 Open threads: questions still pending, follow-ups promised
 Use terse bullets, at most 250 words in total. Drop anything no longer relevant. Output only the notes."""
 
+CN_INSTRUCTIONS = """You help a Chinese-speaking user follow a live English meeting in real time. You are given the question they were just asked and the English answer already prepared for them to say out loud.
+
+Write a short Chinese digest, not a literal translation. Reply in exactly this format, with nothing before or after, using Markdown bold for the two labels:
+**问题：** (an idiomatic, natural Chinese rendering of what is really being asked, not a word-for-word translation)
+
+**要点：**
+- (terse Chinese bullet with one key point of the answer)
+- (at most 4 bullets total, not a sentence-by-sentence translation)"""
+
 BRIEF_INSTRUCTIONS = """Condense the background material into a briefing for an assistant that writes answers in my voice during a meeting. Keep every concrete fact that could be quoted in an answer: names, titles, employers, dates, metrics, technologies, projects, achievements, and the requirements of the role or meeting. Use these sections:
 ## Me
 ## Experience and projects (bullets with metrics)
@@ -191,6 +200,17 @@ class Answerer:
         )
         usage.add_llm(s.notes_model, response.usage)
         return response.output_text.strip() or notes
+
+    async def translate_digest(self, question: str, answer: str, *, usage: UsageTracker) -> str:
+        s = self.settings
+        response = await self.client.responses.create(
+            **self._base(s.notes_model, s.notes_effort),
+            instructions=CN_INSTRUCTIONS,
+            input=f"Question:\n{question}\n\nAnswer:\n{answer}",
+            max_output_tokens=400,
+        )
+        usage.add_llm(s.notes_model, response.usage)
+        return response.output_text.strip()
 
     async def make_brief(self, material: str, *, usage: UsageTracker) -> str:
         s = self.settings

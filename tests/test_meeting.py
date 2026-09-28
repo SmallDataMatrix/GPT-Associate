@@ -57,6 +57,39 @@ def test_continuation_restarts_the_same_card_with_the_full_question(settings):
     assert client.responses.streams[0].closed  # and its HTTP stream closed, so it stops costing tokens
 
 
+def test_continuation_restarts_even_after_the_first_answer_already_finished(settings):
+    async def run():
+        session, client = make_session(settings)
+        now = time.time()
+        say(session, "them", "i1", "Tell me about a hard bug you fixed.", now - 3, now - 2.5)
+        await settle(session)  # the (incomplete) first answer finishes streaming before they add the rest
+        say(session, "them", "i2", "Ideally something in production.", now - 1, now - 0.5)
+        await settle(session)
+        return session, client
+
+    session, client = asyncio.run(run())
+    [card] = session.cards
+    assert card.question == "Tell me about a hard bug you fixed. Ideally something in production."
+    assert card.status == "done" and card.text == "I led the migration."
+    assert len(client.responses.streams) == 2  # the finished answer is discarded and regenerated with the full question
+
+
+def test_answer_gets_a_chinese_digest_automatically(settings):
+    async def run():
+        session, client = make_session(settings)
+        now = time.time()
+        say(session, "them", "i1", "Can you tell me about your last project?", now - 3, now - 0.1)
+        await settle(session)
+        return session, client
+
+    session, client = asyncio.run(run())
+    assert session.cn == "- Participants: Dana"
+    cn_call = client.responses.calls[-1]
+    assert cn_call["instructions"].startswith("You help a Chinese-speaking user")
+    assert "Can you tell me about your last project?" in cn_call["input"]
+    assert "I led the migration." in cn_call["input"]
+
+
 def test_listening_continues_while_an_answer_streams(settings):
     async def run():
         session, _ = make_session(settings, delay=0.05)

@@ -115,6 +115,7 @@ function handle(ev) {
     case 'card': upsertCard(ev.card); break;
     case 'delta': appendDelta(ev.id, ev.d); break;
     case 'notes': renderNotes(ev.notes); break;
+    case 'cn': renderCn(ev.text); break;
     case 'usage': renderUsage(ev.usage); break;
     case 'stt': renderStt(ev.stt); break;
     case 'auto': $('#auto').checked = ev.value; break;
@@ -136,6 +137,7 @@ function applySnapshot(s) {
   }
   s.cards.forEach(upsertCard);
   renderNotes(s.notes);
+  renderCn(s.cn);
   renderUsage(s.usage);
   renderStt(s.stt);
   renderProfileStatus(s.profile);
@@ -257,7 +259,12 @@ function renderStt(stt) {
 
 function renderNotes(notes) {
   $('#notes').textContent = notes.text || 'Notes build up automatically as the conversation goes on.';
-  $('#manual-notes').innerHTML = notes.manual.map((n) => `<li>${esc(n)}</li>`).join('');
+}
+
+function renderCn(text) {
+  const panel = $('#cn-panel');
+  panel.hidden = !text;
+  if (text) $('#cn-content').innerHTML = renderText(text);
 }
 
 function describeProfile(p) {
@@ -491,14 +498,6 @@ function wire() {
     send({ type: 'ask', text });
     $('#ask-input').value = '';
   };
-  $('#note-form').onsubmit = (e) => {
-    e.preventDefault();
-    const text = $('#note-input').value.trim();
-    if (!text) return;
-    send({ type: 'note', text });
-    $('#note-input').value = '';
-  };
-
   document.addEventListener('keydown', (e) => {
     if (e.target.closest('input, textarea, select') || e.ctrlKey || e.metaKey || e.altKey) return;
     if (e.code === 'Space') {
