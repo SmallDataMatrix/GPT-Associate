@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <title>GPT Associate</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232563eb'/%3E%3Cpath d='M9 12h14M9 17h10M9 22h6' stroke='white' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span id="conn" class="dot" title="Connection to the server"></span>GPT Associate</div>
+    <div class="stats">
+      <span id="stt-status" class="stt"></span>
+      <span id="stat-latency" class="stat" title="Last answer: first words / complete, measured from the end of the question"></span>
+      <span id="stat-cost" class="stat" title="Estimated OpenAI cost of this meeting"></span>
+      <span id="stat-cache" class="stat" title="Share of input tokens served from the prompt cache (cheaper and faster)"></span>
+    </div>
+  </header>
+
+  <section class="controls">
+    <div class="capture" id="capture-controls">
+      <select id="mode" aria-label="Meeting type">
+        <option value="online">Online call: them + my mic</option>
+        <option value="online-them">Online call: them only</option>
+        <option value="inperson">In person: mic only</option>
+      </select>
+      <select id="them-source" aria-label="Where the other side's audio comes from" title="Where the other side's audio comes from">
+        <option value="display">Them: share tab / screen audio</option>
+      </select>
+      <button id="btn-listen" class="primary">Start listening</button>
+      <span id="meters" class="meters"></span>
+    </div>
+    <p class="capture-note" id="capture-note" hidden>
+      Audio is captured on the meeting computer. This screen shows the live answers, and you can trigger them from here.
+    </p>
+    <div class="actions">
+      <label class="switch"><input type="checkbox" id="auto" checked> Auto-answer</label>
+      <button id="btn-answer" class="primary" title="Answer what was just said (Space)">Answer now</button>
+      <button id="btn-improve" title="What to add to the answer I just gave (I)">Improve</button>
+      <button id="btn-new" title="Save this meeting and start a fresh one">New meeting</button>
+    </div>
+  </section>
+
+  <details id="setup" class="panel">
+    <summary>Background <span id="profile-status" class="muted"></span></summary>
+    <div class="setup">
+      <div class="row">
+        <label class="inline">Profile <select id="profile-select"></select></label>
+        <button id="btn-new-profile" type="button">New profile</button>
+      </div>
+      <label>About me
+        <textarea id="f-about_me" rows="3" placeholder="Name, current role, experience, strengths, anything I want mentioned"></textarea></label>
+      <label>Meeting goal / job description
+        <textarea id="f-goal" rows="3" placeholder="What this meeting is for; paste the job description here"></textarea></label>
+      <label>About the other side
+        <textarea id="f-other_side" rows="2" placeholder="Company, interviewers, what they care about"></textarea></label>
+      <label>Keywords (names, products, tech terms: helps transcription)
+        <input id="f-keywords" placeholder="e.g. Kubernetes, Acme Corp, Priya Shah"></label>
+      <div class="docs">
+        <label class="file-btn">Upload files (PDF, DOCX, TXT, MD)
+          <input type="file" id="file-input" multiple accept=".pdf,.docx,.txt,.md,.markdown,.csv,.json"></label>
+        <ul id="doc-list"></ul>
+      </div>
+      <label id="brief-wrap" hidden>Brief generated from large documents (you can edit it)
+        <textarea id="f-brief" rows="10"></textarea></label>
+      <div class="row">
+        <button id="btn-prepare" class="primary" type="button">Save &amp; prepare</button>
+        <span id="prepare-status" class="muted"></span>
+      </div>
+    </div>
+  </details>
+
+  <main class="board">
+    <section class="answers" aria-live="polite">
+      <div id="cards"><p class="empty">Answers appear here. Ask something below, press Answer now, or start listening.</p></div>
+    </section>
+    <section class="side">
+      <h2>Live transcript</h2>
+      <div id="transcript" class="transcript"><div id="segs"></div><div id="parts"></div></div>
+      <details class="notes" id="notes-panel">
+        <summary>Live notes <span class="muted">(updated from the conversation)</span></summary>
+        <pre id="notes"></pre>
+        <ul id="manual-notes"></ul>
+        <form id="note-form"><input id="note-input" placeholder="Add a fact for the assistant, then press Enter" autocomplete="off"></form>
+      </details>
+    </section>
+  </main>
+
+  <form id="ask-form" class="ask">
+    <input id="ask-input" placeholder="Type a question and press Enter" autocomplete="off" enterkeyhint="send">
+    <button type="submit" class="primary">Ask</button>
+  </form>
+  <div id="toasts" aria-live="assertive"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
