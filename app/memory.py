@@ -1,4 +1,4 @@
-"""Conversation memory: the live transcript and the running notes that refresh during the meeting."""
+"""Conversation memory: the live transcript, the running notes, and saved meetings rendered as Markdown."""
 
 from __future__ import annotations
 
@@ -86,3 +86,38 @@ class LiveNotes:
 
     def public(self) -> dict:
         return {"text": self.text}
+
+
+def _clock(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    return f"{seconds // 60:02d}:{seconds % 60:02d}"
+
+
+def meeting_markdown(session: dict, summary: str = "") -> str:
+    """A saved meeting as Markdown: the summary, feedback from Improve, then the labelled transcript."""
+    started = session.get("started") or 0
+    when = time.strftime("%Y-%m-%d %H:%M", time.localtime(started)) if started else session.get("id", "")
+    profile = (session.get("profile") or {}).get("name") or ""
+    lines = [f"# Meeting {when}" + (f" ({profile})" if profile else "")]
+    if summary.strip():
+        lines += ["", summary.strip()]
+    feedback = [c for c in session.get("cards") or [] if c.get("kind") == "improve" and (c.get("text") or "").strip()]
+    if feedback:
+        lines += ["", "## Feedback during the meeting"]
+        for card in feedback:
+            lines += ["", f"**Q:** {card.get('question', '')}", "", card["text"].strip()]
+    lines += ["", "## Transcript", ""]
+    segments = session.get("transcript") or []
+    origin = started or (segments[0].get("t") or 0 if segments else 0)
+    runs: list[tuple[str, float, list[str]]] = []
+    for seg in segments:
+        if runs and runs[-1][0] == seg.get("speaker"):
+            runs[-1][2].append(seg.get("text", ""))
+        else:
+            runs.append((seg.get("speaker", ""), seg.get("t") or origin, [seg.get("text", "")]))
+    for speaker, t, texts in runs:
+        lines.append(f"**{SPEAKER_LABELS.get(speaker, speaker)}** [{_clock(t - origin)}]: {' '.join(texts)}")
+        lines.append("")
+    if not runs:
+        lines.append("(Nothing was transcribed.)")
+    return "\n".join(lines).rstrip() + "\n"

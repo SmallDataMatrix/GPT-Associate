@@ -1,4 +1,4 @@
-"""Background material: text extraction, chunking, keyword retrieval and the fixed prompt block."""
+"""Background material: typed documents, text extraction, chunking, keyword retrieval and the fixed prompt block."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import math
 import re
 from collections import Counter
 from dataclasses import dataclass, field
+from typing import NamedTuple
 
 STOPWORDS = frozenset(
     """a an and are as at be been but by for from had has have i in is it its of on or that the this
@@ -23,9 +24,51 @@ PROFILE_SECTIONS = (
     ("keywords", "Key terms"),
 )
 
+# Document kinds, in the order they are laid out for the prep pack. Past transcripts come last: they are
+# the noisiest material, so they are distilled into the pack and searched, never pasted into answers raw.
+DOC_KINDS = {
+    "jd": "Job description / meeting goal",
+    "resume": "Resume / about me",
+    "prep": "My prep notes / prepared answers",
+    "company": "Company / interviewer info",
+    "other": "Other",
+    "interview": "Past interview / meeting transcript",
+}
+PACK_VERSION = "2"  # bump when the prep-pack prompt changes, so saved packs are rewritten once
+PACK_MIN_TOKENS = 300  # profile fields alone smaller than this (no documents) are used as they are
+
+# Filename hints per kind, checked in this order. ASCII hints match whole words, Chinese ones substrings.
+KIND_NAME_HINTS = (
+    ("prep", ("prep", "notes", "answers", "stories", "star", "准备", "笔记", "问答")),
+    ("interview", ("interview", "transcript", "recording", "meeting", "round", "面试", "录音", "逐字稿", "会议")),
+    ("jd", ("jd", "job", "description", "posting", "岗位", "职位", "招聘")),
+    ("resume", ("resume", "cv", "简历", "履历")),
+    ("company", ("company", "research", "interviewers", "公司", "面试官")),
+)
+JD_CUES = ("responsibilities", "qualifications", "requirements", "what you'll do", "what you will do",
+           "about the role", "preferred", "岗位职责", "任职要求", "职位描述", "任职资格")
+RESUME_CUES = ("education", "experience", "skills", "university", "bachelor", "master",
+               "教育", "工作经历", "项目经历", "技能")
+# "Name: words" or "[00:12] Name: words", and "Speaker 1  00:03" on a line of its own (Otter, Feishu, Zoom).
+SPEAKER_LINE = re.compile(
+    r"^(?:\[?\d{1,2}:\d{2}(?::\d{2})?\]?\s*)?(?P<a>[^\s:：\d][^:：]{0,24}?)\s*[:：]\s*\S"
+    r"|^(?P<b>[^\s\d][^:：]{0,24}?)\s+\(?\d{1,2}:\d{2}(?::\d{2})?\)?\s*$"
+)
+NOT_SPEAKERS = {  # labels that repeat in notes and resumes but are not people
+    "q", "a", "question", "answer", "follow-up", "note", "tip", "example", "问", "答",
+    "situation", "task", "action", "result", "company", "role", "title", "dates", "location", "skills",
+}
+CJK = "㐀-䶿一-鿿"
+
+
+class Doc(NamedTuple):
+    name: str
+    text: str
+    kind: str = "other"
+
 
 def normalize_whitespace(text: str) -> str:
-    lines = [re.sub(r"[ \t ]+", " ", line).strip() for line in text.replace("\r", "").split("\n")]
+    lines = [re.sub(r"[ \t ]+", " ", line).strip() for line in text.replace("\r", "").split("\n")]
     return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
 
 
@@ -48,6 +91,36 @@ def extract_text(filename: str, data: bytes) -> str:
     else:
         text = data.decode("utf-8-sig", errors="replace")
     return normalize_whitespace(text)
+
+
+def looks_like_transcript(text: str) -> bool:
+    """A few speaker labels that repeat on many lines, as in an exported recording transcript."""
+    lines = [line for line in text.splitlines() if line.strip()]
+    labels = Counter()
+    for line in lines:
+        match = SPEAKER_LINE.match(line.strip())
+        label = match and (match.group("a") or match.group("b")).strip().lower()
+        if label and label not in NOT_SPEAKERS:
+            labels[label] += 1
+    top = sum(n for _, n in labels.most_common(3))
+    return top >= 8 and top >= 0.3 * len(lines)
+
+
+def guess_kind(name: str, text: str) -> str:
+    """Best guess of a document's kind from its name and content; the user can change it."""
+    lower_name = name.lower()
+    if lower_name.endswith((".srt", ".vtt")) or looks_like_transcript(text):
+        return "interview"
+    words = set(re.findall(r"[a-z]+", lower_name))
+    for kind, hints in KIND_NAME_HINTS:
+        if any(h in words if h.isascii() else h in lower_name for h in hints):
+            return kind
+    head = text[:20000].lower()
+    if sum(cue in head for cue in JD_CUES) >= 2:
+        return "jd"
+    if sum(cue in head for cue in RESUME_CUES) >= 3:
+        return "resume"
+    return "other"
 
 
 def estimate_tokens(text: str) -> int:
@@ -79,8 +152,12 @@ def chunk_text(text: str, size: int = 800) -> list[str]:
 
 
 def tokenize(text: str) -> list[str]:
+    """English words plus Chinese character bigrams, so Chinese notes are searchable too."""
     words = re.findall(r"[a-z0-9][a-z0-9+#]*(?:\.[a-z0-9]+)*", text.lower())
-    return [w for w in words if len(w) > 1 and w not in STOPWORDS]
+    tokens = [w for w in words if len(w) > 1 and w not in STOPWORDS]
+    for run in re.findall(f"[{CJK}]+", text):
+        tokens.extend(run[i : i + 2] for i in range(max(1, len(run) - 1)))
+    return tokens
 
 
 class BM25:
@@ -114,13 +191,31 @@ class BM25:
 @dataclass
 class KnowledgeBase:
     static_text: str = ""  # background block that stays fixed for the whole meeting (prompt-cached)
-    mode: str = "empty"  # empty | full | brief | indexed
     tokens: int = 0  # estimated size of all source material
-    index: BM25 | None = None  # only when the material is too large to include in full
+    pack: bool = False  # the prep pack is part of static_text
+    full: bool = False  # every reference document (all but past transcripts) is in static_text verbatim
+    index: BM25 | None = None  # past transcripts, and reference documents too large to include in full
+    searchable: int = 0  # documents in the index
     terms: list[str] = field(default_factory=list)  # names and jargon that help transcription
 
     def retrieve(self, query: str, k: int = 3) -> list[str]:
         return self.index.search(query, k) if self.index else []
+
+    def describe(self) -> str:
+        parts = []
+        if self.pack:
+            parts.append("prep pack")
+        if self.full:
+            parts.append("full text")
+        if self.index:
+            parts.append(f"search over {self.searchable} doc{'' if self.searchable == 1 else 's'}")
+        if parts:
+            return " + ".join(parts)
+        return "profile fields only" if self.static_text else "nothing added yet"
+
+
+def kind_of(doc: Doc) -> str:
+    return doc.kind if doc.kind in DOC_KINDS else "other"
 
 
 def profile_header(profile: dict) -> str:
@@ -132,29 +227,44 @@ def profile_header(profile: dict) -> str:
     return "\n\n".join(parts)
 
 
-def docs_text(docs: list[tuple[str, str]]) -> str:
-    return "\n\n".join(f"### {name}\n\n{text.strip()}" for name, text in docs if text.strip())
+def docs_text(docs: list[Doc]) -> str:
+    """Documents grouped by kind, each under its own heading."""
+    groups = []
+    for kind, title in DOC_KINDS.items():
+        body = "\n\n".join(f"### {d.name}\n\n{d.text.strip()}" for d in docs if kind_of(d) == kind and d.text.strip())
+        if body:
+            groups.append(f"## Documents: {title}\n\n{body}")
+    return "\n\n".join(groups)
 
 
-def source_hash(profile: dict, docs: list[tuple[str, str]]) -> str:
-    material = profile_header(profile) + "\n\n" + docs_text(docs)
+def source_material(profile: dict, docs: list[Doc]) -> str:
+    return "\n\n".join(p for p in (profile_header(profile), docs_text(docs)) if p)
+
+
+def source_hash(profile: dict, docs: list[Doc]) -> str:
+    material = f"{PACK_VERSION}\n{source_material(profile, docs)}"
     return hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
 
 
-def source_material(profile: dict, docs: list[tuple[str, str]]) -> str:
-    body = docs_text(docs)
-    return "\n\n".join(p for p in (profile_header(profile), f"## Documents\n\n{body}" if body else "") if p)
+def wants_pack(profile: dict, docs: list[Doc]) -> bool:
+    """Worth writing a prep pack: there are documents, or the profile fields hold real material (e.g. a pasted JD)."""
+    return any(d.text.strip() for d in docs) or estimate_tokens(profile_header(profile)) >= PACK_MIN_TOKENS
 
 
-def needs_brief(profile: dict, docs: list[tuple[str, str]], limit: int) -> bool:
-    return estimate_tokens(source_material(profile, docs)) > limit
+def pack_material(profile: dict, docs: list[Doc], max_tokens: int) -> str:
+    """Source material for the prep pack, every document trimmed by the same ratio when it is too large."""
+    budget = max(max_tokens * 4 - len(profile_header(profile)), 4000)
+    total = sum(len(d.text) for d in docs)
+    if total > budget:
+        docs = [d._replace(text=d.text[: len(d.text) * budget // total]) for d in docs]
+    return source_material(profile, docs)
 
 
-def transcription_terms(profile: dict, docs: list[tuple[str, str]], max_terms: int = 40) -> list[str]:
+def transcription_terms(profile: dict, docs: list[Doc], max_terms: int = 40) -> list[str]:
     """The user's keywords plus names and jargon that recur in the background."""
     terms = [t.strip() for t in re.split(r"[,;\n]", profile.get("keywords") or "") if t.strip()]
     text = "\n".join([profile.get("about_me") or "", profile.get("goal") or "", profile.get("other_side") or ""])
-    text += "\n" + "\n".join(t for _, t in docs)
+    text += "\n" + "\n".join(d.text for d in docs)
     counts = Counter(re.findall(r"\b(?:[A-Z][a-z]*[A-Z0-9+#][A-Za-z0-9+#]*|[A-Z][a-z]{2,}|[A-Z]{2,}[0-9]*)\b", text))
     seen = {t.lower() for t in terms}
     for word, count in counts.most_common():
@@ -166,17 +276,30 @@ def transcription_terms(profile: dict, docs: list[tuple[str, str]], max_terms: i
     return terms[:max_terms]
 
 
-def build_knowledge(profile: dict, docs: list[tuple[str, str]], limit: int, brief: str = "") -> KnowledgeBase:
-    material = source_material(profile, docs)
+def build_knowledge(profile: dict, docs: list[Doc], limit: int, pack: str = "") -> KnowledgeBase:
+    """Static block = profile fields + prep pack + reference documents in full when they fit.
+
+    Past transcripts never go in verbatim: the pack distills them and live answers search them.
+    """
+    docs = [d for d in docs if d.text.strip()]
     terms = transcription_terms(profile, docs)
-    if not material:
-        return KnowledgeBase(terms=terms)
-    tokens = estimate_tokens(material)
-    if tokens <= limit:
-        return KnowledgeBase(static_text=material, mode="full", tokens=tokens, terms=terms)
-    index = BM25([f"[{name}]\n{chunk}" for name, text in docs for chunk in chunk_text(text)])
     header = profile_header(profile)
-    if brief.strip():
-        static = "\n\n".join(p for p in (header, f"## Background brief\n\n{brief.strip()}") if p)
-        return KnowledgeBase(static_text=static, mode="brief", tokens=tokens, index=index, terms=terms)
-    return KnowledgeBase(static_text=header, mode="indexed", tokens=tokens, index=index, terms=terms)
+    if not header and not docs:
+        return KnowledgeBase(terms=terms)
+    reference = docs_text([d for d in docs if kind_of(d) != "interview"])
+    full = bool(reference) and estimate_tokens(reference) <= limit
+    pack = pack.strip()
+    static = "\n\n".join(p for p in (header, pack and f"## Prep pack\n\n{pack}", full and reference) if p)
+    searchable = [d for d in docs if kind_of(d) == "interview" or not full]
+    index = None
+    if searchable:
+        index = BM25([f"[{DOC_KINDS[kind_of(d)]}: {d.name}]\n{c}" for d in searchable for c in chunk_text(d.text)])
+    return KnowledgeBase(
+        static_text=static,
+        tokens=estimate_tokens(source_material(profile, docs)),
+        pack=bool(pack),
+        full=full,
+        index=index,
+        searchable=len(searchable),
+        terms=terms,
+    )

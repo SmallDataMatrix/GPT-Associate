@@ -102,6 +102,11 @@ input { min-width: 0; }
 #doc-list { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
 #doc-list li { background: var(--panel-2); border-radius: 999px; padding: 3px 4px 3px 12px; font-size: 13px; display: flex; align-items: center; gap: 6px; }
 #doc-list button { border: 0; background: transparent; padding: 0 6px; color: var(--muted); }
+#doc-list select { padding: 1px 4px; font-size: 12px; border-radius: 6px; }
+#doc-list li.inherited { opacity: 0.75; padding-right: 12px; }
+.doc-name { overflow-wrap: anywhere; }
+.hint { margin: 2px 0 0; font-size: 12px; }
+.setup label.inline select { max-width: min(420px, 70vw); }
 
 .board { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 16px; padding: 0 16px; align-items: start; }
 .side { position: sticky; top: 60px; display: grid; gap: 10px; }
@@ -129,6 +134,7 @@ h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: 
 .card.status-cancelled { opacity: 0.55; }
 .card.kind-improve { border-left: 4px solid var(--room); }
 .card.kind-search { border-left: 4px solid var(--them); }
+.card.kind-detail { border-left: 4px solid var(--me); }
 
 .transcript { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; height: min(56vh, 560px); overflow-y: auto; font-size: 14px; }
 .seg { margin: 0 0 6px; }

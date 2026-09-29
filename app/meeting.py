@@ -15,11 +15,19 @@ from dataclasses import dataclass, field
 
 from fastapi import WebSocket, WebSocketDisconnect
 
-from .answerer import Answerer, Context, answer_request, improve_request, open_request, search_request
+from .answerer import (
+    Answerer,
+    Context,
+    answer_request,
+    detail_request,
+    improve_request,
+    open_request,
+    search_request,
+)
 from .config import Settings
 from .detector import is_echo, is_question, normalize
-from .knowledge import KnowledgeBase, build_knowledge, needs_brief, source_hash, source_material
-from .memory import LiveNotes, Segment, Transcript
+from .knowledge import KnowledgeBase, build_knowledge, pack_material, source_hash, wants_pack
+from .memory import LiveNotes, Segment, Transcript, meeting_markdown
 from .store import Store
 from .transcriber import Transcriber
 from .usage import UsageTracker
@@ -35,6 +43,7 @@ DEDUPE_WINDOW_S = 10.0
 ECHO_WINDOW_S = 8.0
 MAX_QUESTION_CHARS = 800
 TRANSCRIPT_PROMPT_CHARS = 12000  # about 3k tokens of recent conversation per answer
+RETRIEVAL_CONTEXT_CHARS = 600  # recent conversation added to the search query, so follow-ups find their topic
 PREWARM_EVERY_S = 240.0
 TICK_S = 10.0
 
@@ -43,8 +52,8 @@ _card_ids = itertools.count(1)
 
 @dataclass
 class Card:
-    kind: str  # answer | search | improve
-    source: str  # auto | manual | typed | search | improve
+    kind: str  # answer | detail | search | improve
+    source: str  # auto | manual | typed | detail | search | improve
     question: str
     request: str
     t0: float  # end of the question (or the button press): latency is measured from here
@@ -52,7 +61,7 @@ class Card:
     created: float = field(default_factory=time.time)
     started: float = field(default_factory=time.time)
     text: str = ""
-    status: str = "pending"  # pending | searching | streaming | done | cancelled | error
+    status: str = "pending"  # pending | searching | quick | streaming | done | cancelled | error
     first_ms: int | None = None
     done_ms: int | None = None
     error: str = ""
@@ -179,15 +188,16 @@ class MeetingSession:
         return f"ga-{self.profile.get('slug') or 'default'}"
 
     def context(self, question: str) -> Context:
+        recent = self.transcript.render(max_chars=RETRIEVAL_CONTEXT_CHARS)
         return Context(
             background=self.kb.static_text,
             notes=self.notes.render(),
             transcript=self.transcript.render(max_chars=TRANSCRIPT_PROMPT_CHARS),
-            excerpts=self.kb.retrieve(question),
+            excerpts=self.kb.retrieve(f"{question}\n{recent}"),
         )
 
     def profile_info(self) -> dict:
-        return {**self.profile, "mode": self.kb.mode, "tokens": self.kb.tokens}
+        return {**self.profile, "summary": self.kb.describe(), "tokens": self.kb.tokens}
 
     def snapshot(self) -> dict:
         return {
@@ -331,7 +341,8 @@ class MeetingSession:
         try:
             stream = self.answerer.stream(
                 self.context(card.question), card.request,
-                cache_key=self.cache_key, usage=self.usage, web=card.kind == "search",
+                cache_key=self.cache_key, usage=self.usage,
+                web=card.kind == "search", deep=card.kind == "detail",
             )
             async with contextlib.aclosing(stream):
                 async for event in stream:
@@ -373,13 +384,15 @@ class MeetingSession:
         if kind == "ask":
             text = str(message.get("text", "")).strip()
             if text:
-                self._launch(Card("answer", "typed", text, answer_request(text, typed=True), time.time()))
+                self._launch(Card("detail", "typed", text, detail_request(text), time.time()))
         elif kind == "answer_now":
             self.answer_now()
         elif kind == "improve":
             self.improve(message.get("card_id"))
         elif kind == "search":
             self.search(message.get("card_id"))
+        elif kind == "detail":
+            self.detail(message.get("card_id"))
         elif kind == "stop":
             card = self._find(message.get("card_id"))
             if card:
@@ -409,7 +422,7 @@ class MeetingSession:
 
     def _target(self, card_id) -> Card | None:
         card = self._find(card_id) if card_id else None
-        return card or next((c for c in reversed(self.cards) if c.kind in ("answer", "search")), None)
+        return card or next((c for c in reversed(self.cards) if c.kind in ("answer", "detail", "search")), None)
 
     def improve(self, card_id=None) -> None:
         target = self._target(card_id)
@@ -431,6 +444,12 @@ class MeetingSession:
             return
         self._launch(Card("search", "search", target.question, search_request(target.question), time.time(), parent=target.id))
 
+    def detail(self, card_id=None) -> None:
+        target = self._target(card_id)
+        if not target:
+            return
+        self._launch(Card("detail", "detail", target.question, detail_request(target.question), time.time(), parent=target.id))
+
     async def new_meeting(self) -> None:
         self.save()
         for card_id in list(self._tasks):
@@ -441,7 +460,7 @@ class MeetingSession:
     # Chinese digest, live notes, background, persistence --------------------------
 
     def _maybe_translate(self, card: Card) -> None:
-        if not self.answerer.available or card.kind != "answer" or not card.text.strip():
+        if not self.answerer.available or card.kind not in ("answer", "detail") or not card.text.strip():
             return
         self._cn_gen += 1
         self._spawn(self._translate(card, self._cn_gen))
@@ -493,24 +512,29 @@ class MeetingSession:
 
         self._spawn(warm())
 
-    def load_profile(self, slug: str, brief: str | None = None) -> None:
-        profile = self.store.load_profile(slug)
-        docs = self.store.load_docs(slug)
-        if brief is None:
+    def load_profile(self, slug: str, pack: str | None = None) -> None:
+        profile, docs = self.store.load_material(slug)
+        if pack is None:
             fresh = profile.get("brief_hash") == source_hash(profile, docs)
-            brief = profile.get("brief", "") if fresh else ""
-        self.kb = build_knowledge(profile, docs, self.settings.full_text_token_limit, brief)
+            pack = profile.get("brief", "") if fresh else ""
+        self.kb = build_knowledge(profile, docs, self.settings.full_text_token_limit, pack)
         self.profile = {"slug": slug, "name": profile["name"]}
 
     async def activate_profile(self, slug: str) -> dict:
-        profile = self.store.load_profile(slug)
-        docs = self.store.load_docs(slug)
+        """Loads a profile for the meeting, writing its prep pack first when the material changed."""
+        profile, docs = self.store.load_material(slug)
         digest = source_hash(profile, docs)
-        brief = profile.get("brief", "") if profile.get("brief_hash") == digest else ""
-        if not brief and self.answerer.available and needs_brief(profile, docs, self.settings.full_text_token_limit):
-            brief = await self.answerer.make_brief(source_material(profile, docs), usage=self.usage)
-            self.store.save_profile(slug, {"brief": brief, "brief_hash": digest})
-        self.load_profile(slug, brief)
+        pack = profile.get("brief", "") if profile.get("brief_hash") == digest else ""
+        warning = ""
+        if not pack and self.answerer.available and wants_pack(profile, docs):
+            material = pack_material(profile, docs, self.settings.pack_input_token_limit)
+            try:
+                pack = await self.answerer.make_pack(material, usage=self.usage)
+                self.store.save_profile(slug, {"brief": pack, "brief_hash": digest})
+            except Exception as exc:
+                log.exception("prep pack failed")
+                warning = f"The prep pack could not be written ({exc}). Using the documents directly."
+        self.load_profile(slug, pack)
         self.store.set_active(slug)
         for transcriber in self.transcribers.values():
             await transcriber.set_terms(self.kb.terms)
@@ -518,7 +542,35 @@ class MeetingSession:
         info = self.profile_info()
         self.hub.publish({"type": "profile", "profile": info})
         self._publish_usage()
-        return info
+        return {**info, "warning": warning} if warning else info
+
+    # Past meetings -----------------------------------------------------------------
+
+    async def meeting_summary(self, session_id: str) -> str | None:
+        """A saved meeting (the current one included) as Markdown, led by a summary when one can be written."""
+        if session_id == self.id:
+            self.save()
+        data = self.store.load_session(session_id)
+        if not data:
+            return None
+        key = f"{len(data.get('transcript') or [])}:{len(data.get('cards') or [])}"
+        cached = self.store.load_summary(session_id)
+        summary = cached.get("text", "") if cached.get("key") == key else ""
+        if not summary and self.answerer.available and data.get("transcript"):
+            try:
+                summary = await self.answerer.summarize_meeting(meeting_markdown(data), usage=self.usage)
+                self.store.save_summary(session_id, {"key": key, "text": summary})
+                self._publish_usage()
+            except Exception:
+                log.exception("meeting summary failed")  # still hand back the transcript
+        return meeting_markdown(data, summary)
+
+    async def import_meeting(self, slug: str, session_id: str) -> str | None:
+        """Adds a saved meeting to a profile's background as a past-interview document."""
+        text = await self.meeting_summary(session_id)
+        if text is None:
+            return None
+        return self.store.save_doc(slug, f"meeting-{session_id}.md", text, "interview")
 
     def attach_audio(self, source: str) -> Transcriber:
         old = self.transcribers.pop(source, None)

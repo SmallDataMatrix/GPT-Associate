@@ -7,7 +7,11 @@ import os
 import re
 from pathlib import Path
 
-PROFILE_FIELDS = ("name", "about_me", "goal", "other_side", "keywords", "brief", "brief_hash")
+from .knowledge import DOC_KINDS, Doc, guess_kind
+
+PROFILE_FIELDS = ("name", "about_me", "goal", "other_side", "keywords", "base", "brief", "brief_hash")
+SESSION_ID = re.compile(r"[\w-]{1,64}")
+MAX_SESSIONS_LISTED = 50
 
 
 def slugify(name: str) -> str:
@@ -20,6 +24,10 @@ def safe_filename(name: str) -> str:
     return base[:120] or "document"
 
 
+def valid_session_id(session_id: str) -> bool:
+    return bool(SESSION_ID.fullmatch(session_id or ""))
+
+
 def _write_json(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
@@ -29,9 +37,14 @@ def _write_json(path: Path, data: dict) -> None:
 
 def _read_json(path: Path) -> dict:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _join(*texts: str, sep: str = "\n\n") -> str:
+    return sep.join(t.strip() for t in texts if t and t.strip())
 
 
 class Store:
@@ -70,37 +83,75 @@ class Store:
         _write_json(self._profile_dir(slug) / "profile.json", profile)
         return profile
 
+    def base_of(self, slug: str) -> str:
+        """The profile this one builds on, if it is set and still exists (one level only)."""
+        base = self.load_profile(slug).get("base", "")
+        return base if base and base != slugify(slug) and self.profile_exists(base) else ""
+
+    def load_material(self, slug: str) -> tuple[dict, list[Doc]]:
+        """The profile and documents to prepare, with the base profile's About me, keywords and documents merged in."""
+        profile = self.load_profile(slug)
+        docs = self.load_docs(slug)
+        base = self.base_of(slug)
+        if not base:
+            return profile, docs
+        parent = self.load_profile(base)
+        profile["about_me"] = _join(parent["about_me"], profile["about_me"])
+        profile["keywords"] = _join(parent["keywords"], profile["keywords"], sep=", ")
+        inherited = [d._replace(name=f"{parent['name']} / {d.name}") for d in self.load_docs(base)]
+        return profile, inherited + docs
+
+    # Documents ----------------------------------------------------------------
+
+    def _docs_dir(self, slug: str) -> Path:
+        return self._profile_dir(slug) / "docs"
+
+    def _kinds_path(self, slug: str) -> Path:
+        return self._profile_dir(slug) / "docs.json"
+
+    def load_docs(self, slug: str) -> list[Doc]:
+        docs_dir = self._docs_dir(slug)
+        if not docs_dir.exists():
+            return []
+        kinds = _read_json(self._kinds_path(slug))
+        docs = []
+        for path in sorted(docs_dir.glob("*.txt")):
+            name = path.name[: -len(".txt")]
+            text = path.read_text(encoding="utf-8")
+            kind = kinds.get(name)
+            docs.append(Doc(name, text, kind if kind in DOC_KINDS else guess_kind(name, text)))
+        return docs
+
     def list_docs(self, slug: str) -> list[dict]:
-        docs_dir = self._profile_dir(slug) / "docs"
-        if not docs_dir.exists():
-            return []
-        return [
-            {"name": path.name[: -len(".txt")], "chars": path.stat().st_size}
-            for path in sorted(docs_dir.glob("*.txt"))
-        ]
+        return [{"name": d.name, "chars": len(d.text), "kind": d.kind} for d in self.load_docs(slug)]
 
-    def load_docs(self, slug: str) -> list[tuple[str, str]]:
-        docs_dir = self._profile_dir(slug) / "docs"
-        if not docs_dir.exists():
-            return []
-        return [
-            (path.name[: -len(".txt")], path.read_text(encoding="utf-8"))
-            for path in sorted(docs_dir.glob("*.txt"))
-        ]
-
-    def save_doc(self, slug: str, filename: str, text: str) -> str:
+    def save_doc(self, slug: str, filename: str, text: str, kind: str = "") -> str:
         name = safe_filename(filename)
-        path = self._profile_dir(slug) / "docs" / f"{name}.txt"
+        path = self._docs_dir(slug) / f"{name}.txt"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
+        self.set_doc_kind(slug, name, kind if kind in DOC_KINDS else guess_kind(name, text))
         return name
 
+    def set_doc_kind(self, slug: str, name: str, kind: str) -> bool:
+        name = safe_filename(name)
+        if kind not in DOC_KINDS or not (self._docs_dir(slug) / f"{name}.txt").exists():
+            return False
+        kinds = _read_json(self._kinds_path(slug))
+        kinds[name] = kind
+        _write_json(self._kinds_path(slug), kinds)
+        return True
+
     def delete_doc(self, slug: str, name: str) -> bool:
-        path = self._profile_dir(slug) / "docs" / f"{safe_filename(name)}.txt"
-        if path.exists():
-            path.unlink()
-            return True
-        return False
+        name = safe_filename(name)
+        path = self._docs_dir(slug) / f"{name}.txt"
+        if not path.exists():
+            return False
+        path.unlink()
+        kinds = _read_json(self._kinds_path(slug))
+        if kinds.pop(name, None) is not None:
+            _write_json(self._kinds_path(slug), kinds)
+        return True
 
     def get_active(self) -> str | None:
         return _read_json(self.root / "state.json").get("active_profile")
@@ -114,3 +165,33 @@ class Store:
 
     def save_session(self, session_id: str, data: dict) -> None:
         _write_json(self.sessions_dir / f"{session_id}.json", data)
+
+    def load_session(self, session_id: str) -> dict:
+        return _read_json(self.sessions_dir / f"{session_id}.json") if valid_session_id(session_id) else {}
+
+    def list_sessions(self) -> list[dict]:
+        """Saved meetings, newest first, skipping ones where nothing happened."""
+        if not self.sessions_dir.exists():
+            return []
+        sessions = []
+        for path in sorted(self.sessions_dir.glob("*.json"), reverse=True):
+            data = _read_json(path)
+            segments = len(data.get("transcript") or [])
+            questions = sum(1 for c in data.get("cards") or [] if c.get("kind") in ("answer", "detail"))
+            if segments or questions:
+                sessions.append({
+                    "id": path.stem,
+                    "started": data.get("started") or 0,
+                    "profile": (data.get("profile") or {}).get("name") or "",
+                    "segments": segments,
+                    "questions": questions,
+                })
+            if len(sessions) >= MAX_SESSIONS_LISTED:
+                break
+        return sessions
+
+    def load_summary(self, session_id: str) -> dict:
+        return _read_json(self.sessions_dir / "summaries" / f"{session_id}.json") if valid_session_id(session_id) else {}
+
+    def save_summary(self, session_id: str, data: dict) -> None:
+        _write_json(self.sessions_dir / "summaries" / f"{session_id}.json", data)

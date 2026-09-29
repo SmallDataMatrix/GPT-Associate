@@ -194,7 +194,7 @@ def test_typed_question_search_and_stop(settings):
     typed, web = session.cards
     assert typed.status == "cancelled"
     assert web.kind == "search" and web.status == "done"
-    assert client.responses.calls[1]["tools"] == [{"type": "web_search"}]
+    assert [c["tools"] for c in client.responses.calls if "tools" in c] == [[{"type": "web_search"}]]
 
 
 def test_live_notes_refresh_after_enough_new_segments(settings):
@@ -232,3 +232,79 @@ def test_new_meeting_saves_and_resets(settings):
     session, old_id = asyncio.run(run())
     assert session.cards == []
     assert (settings.data_dir / "sessions" / f"{old_id}.json").exists()
+
+
+def test_prepare_writes_a_prep_pack_once_and_reuses_it(settings):
+    async def run():
+        session, client = make_session(settings)
+        session.store.save_profile("acme", {"name": "Acme"})
+        session.store.save_doc("acme", "jd.txt", "Senior engineer. Responsibilities: Kafka. Qualifications: Python.")
+        first = await session.activate_profile("acme")
+        await session.activate_profile("acme")  # material unchanged: the saved pack is reused
+        await settle(session)
+        return session, client, first
+
+    session, client, info = asyncio.run(run())
+    pack_calls = [c for c in client.responses.calls if c.get("instructions", "").startswith("You prepare me")]
+    assert len(pack_calls) == 1 and "## Documents: Job description" in pack_calls[0]["input"]
+    assert info["summary"] == "prep pack + full text" and "warning" not in info
+    assert "## Prep pack\n\n- Participants: Dana" in session.kb.static_text
+
+
+def test_prepare_still_loads_the_profile_when_the_pack_fails(settings):
+    async def run():
+        session, _ = make_session(settings)
+        session.store.save_profile("acme", {"name": "Acme"})
+        session.store.save_doc("acme", "jd.txt", "Kafka role.")
+
+        async def fail(*args, **kwargs):
+            raise RuntimeError("rate limited")
+
+        session.answerer.make_pack = fail
+        info = await session.activate_profile("acme")
+        await settle(session)
+        return session, info
+
+    session, info = asyncio.run(run())
+    assert "rate limited" in info["warning"] and info["summary"] == "full text"
+    assert "Kafka role." in session.kb.static_text
+
+
+def test_retrieval_uses_the_recent_conversation(settings):
+    async def run():
+        session, client = make_session(settings)
+        session.auto_answer = False
+        session.store.save_profile("acme", {"name": "Acme"})
+        transcript = "\n".join(f"Interviewer: Tell me about Kafka {i}?\nMe: We ran Kafka at Globex {i}." for i in range(6))
+        session.store.save_doc("acme", "round1.txt", transcript + "\n\nInterviewer: What about Redis?\nMe: Redis cache.")
+        session.load_profile("acme")
+        now = time.time()
+        say(session, "them", "i1", "We use Kafka heavily at Acme.", now - 3, now - 2)
+        return session.context("Can you go deeper on that?")
+
+    ctx = asyncio.run(run())
+    assert ctx.excerpts and "Kafka" in ctx.excerpts[0]
+
+
+def test_typed_questions_and_the_detail_button_answer_in_depth(settings):
+    async def run():
+        session, client = make_session(settings)
+        now = time.time()
+        say(session, "them", "i1", "How would you design a rate limiter?", now - 2, now - 1)
+        await settle(session)
+        await session.command({"type": "detail", "card_id": session.cards[0].id})
+        await session.command({"type": "ask", "text": "What is a token bucket?"})
+        await settle(session)
+        return session, client
+
+    session, client = asyncio.run(run())
+    quick, detailed, typed = session.cards
+    assert quick.kind == "answer" and detailed.kind == typed.kind == "detail"
+    assert detailed.parent == quick.id and detailed.question == quick.question
+    assert detailed.status == typed.status == "done"
+    deep_calls = [c for c in client.responses.calls if c.get("stream") and c["model"] == "gpt-6-sol"]
+    assert len(deep_calls) == 2
+    assert "answer in more depth" in text_of(deep_calls[1]["input"][-1])
+    assert "What is a token bucket?" in text_of(deep_calls[1]["input"][-1])
+    cn_inputs = [c["input"] for c in client.responses.calls if c.get("instructions", "").startswith("You help a Chinese")]
+    assert any("What is a token bucket?" in i for i in cn_inputs)  # detailed answers get the Chinese digest too

@@ -50,6 +50,9 @@ class Settings:
     answer_model: str = "gpt-6-luna"
     answer_effort: str = "none"
     answer_max_tokens: int = 400
+    detail_model: str = "gpt-6-sol"
+    detail_effort: str = "low"
+    detail_think_s: float = 5.0
     notes_model: str = "gpt-6-luna"
     notes_effort: str = "none"
     brief_model: str = "gpt-6-luna"
@@ -58,6 +61,7 @@ class Settings:
     vad_silence_ms: int = 500
     vad_threshold: float = 0.5
     full_text_token_limit: int = 15000
+    pack_input_token_limit: int = 120000
     lan_access: bool = True
     access_code: str = "000000"
     host: str = "0.0.0.0"
@@ -74,6 +78,9 @@ def load_settings() -> Settings:
         answer_model=_env("ANSWER_MODEL", "gpt-6-luna"),
         answer_effort=_env("ANSWER_REASONING_EFFORT", "none"),
         answer_max_tokens=int(_env("ANSWER_MAX_TOKENS", "400")),
+        detail_model=_env("DETAIL_MODEL", "gpt-6-sol"),
+        detail_effort=_env("DETAIL_REASONING_EFFORT", "low"),
+        detail_think_s=float(_env("DETAIL_THINK_SECONDS", "5")),
         notes_model=_env("NOTES_MODEL", "gpt-6-luna"),
         notes_effort=_env("NOTES_REASONING_EFFORT", "none"),
         brief_model=_env("BRIEF_MODEL", "gpt-6-luna"),
@@ -82,6 +89,7 @@ def load_settings() -> Settings:
         vad_silence_ms=int(_env("VAD_SILENCE_MS", "500")),
         vad_threshold=float(_env("VAD_THRESHOLD", "0.5")),
         full_text_token_limit=int(_env("FULL_TEXT_TOKEN_LIMIT", "15000")),
+        pack_input_token_limit=int(_env("PACK_INPUT_TOKEN_LIMIT", "120000")),
         lan_access=lan,
         access_code=_env("ACCESS_CODE") or f"{secrets.randbelow(10**6):06d}",
         host="0.0.0.0" if lan else "127.0.0.1",

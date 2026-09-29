@@ -7,21 +7,22 @@ import secrets
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request, UploadFile, WebSocket
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.requests import HTTPConnection
 from starlette.websockets import WebSocketDisconnect
 
 from .answerer import Answerer
 from .config import STATIC_DIR, Settings
-from .knowledge import extract_text, source_hash
+from .knowledge import DOC_KINDS, extract_text, source_hash
 from .meeting import MeetingSession
-from .store import Store, slugify
+from .store import Store, slugify, valid_session_id
 from .transcriber import Transcriber
 
 COOKIE = "ga_code"
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 AUDIO_SOURCES = ("them", "me", "room")
+PROFILE_INPUTS = ("name", "about_me", "goal", "other_side", "keywords", "base", "brief")
 LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost"}
 
 LOGIN_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
@@ -79,6 +80,19 @@ def create_app(settings: Settings, client=None, transcriber_factory=Transcriber)
             raise HTTPException(404, "Unknown profile.")
         return slug
 
+    def check_session(session_id: str) -> str:
+        if not valid_session_id(session_id):
+            raise HTTPException(404, "Unknown meeting.")
+        return session_id
+
+    def profile_payload(slug: str) -> dict:
+        """A profile for the Background panel: its fields, its documents and the ones it reuses from its base."""
+        base = store.base_of(slug)
+        base_name = store.load_profile(base)["name"] if base else ""
+        base_docs = [{**d, "from": base_name} for d in store.list_docs(base)] if base else []
+        return {**store.load_profile(slug), "slug": slug, "docs": store.list_docs(slug),
+                "base_docs": base_docs, "kinds": DOC_KINDS}
+
     @app.get("/")
     async def index():
         return FileResponse(STATIC_DIR / "index.html", headers={"Cache-Control": "no-cache"})
@@ -100,18 +114,21 @@ def create_app(settings: Settings, client=None, transcriber_factory=Transcriber)
     @app.get("/api/profiles/{slug}")
     async def get_profile(slug: str):
         check_slug(slug)
-        return {**store.load_profile(slug), "slug": slug, "docs": store.list_docs(slug)}
+        return profile_payload(slug)
 
     @app.put("/api/profiles/{slug}")
     async def save_profile(slug: str, body: dict):
         check_slug(slug)
         before = store.load_profile(slug)
-        fields = {k: body[k] for k in ("name", "about_me", "goal", "other_side", "keywords", "brief") if k in body}
-        profile = store.save_profile(slug, fields)
+        fields = {k: body[k] for k in PROFILE_INPUTS if k in body}
+        base = str(fields.get("base") or "")
+        if base and (base == slug or not store.profile_exists(base)):
+            raise HTTPException(400, "A profile can only build on another existing profile.")
+        store.save_profile(slug, fields)
         if "brief" in body and body["brief"] != before.get("brief"):
-            # A hand-edited brief is kept until the documents or profile fields change.
-            profile = store.save_profile(slug, {"brief_hash": source_hash(profile, store.load_docs(slug))})
-        return {**profile, "slug": slug, "docs": store.list_docs(slug)}
+            # A hand-edited prep pack is kept until the documents or profile fields change.
+            store.save_profile(slug, {"brief_hash": source_hash(*store.load_material(slug))})
+        return profile_payload(slug)
 
     @app.post("/api/profiles/{slug}/docs")
     async def upload_docs(slug: str, files: list[UploadFile]):
@@ -134,11 +151,40 @@ def create_app(settings: Settings, client=None, transcriber_factory=Transcriber)
             store.save_doc(slug, name, text)
         return {"docs": store.list_docs(slug), "errors": errors}
 
+    @app.patch("/api/profiles/{slug}/docs/{name}")
+    async def set_doc_kind(slug: str, name: str, body: dict):
+        check_slug(slug)
+        if not store.set_doc_kind(slug, name, str(body.get("kind", ""))):
+            raise HTTPException(400, "Unknown document or type.")
+        return {"docs": store.list_docs(slug)}
+
     @app.delete("/api/profiles/{slug}/docs/{name}")
     async def delete_doc(slug: str, name: str):
         check_slug(slug)
         store.delete_doc(slug, name)
         return {"docs": store.list_docs(slug)}
+
+    @app.post("/api/profiles/{slug}/import")
+    async def import_meeting(slug: str, body: dict):
+        check_slug(slug)
+        if not store.profile_exists(slug):
+            raise HTTPException(404, "Unknown profile.")
+        if not await meeting.import_meeting(slug, check_session(str(body.get("session_id", "")))):
+            raise HTTPException(404, "That meeting has nothing recorded.")
+        return profile_payload(slug)
+
+    @app.get("/api/sessions")
+    async def list_sessions():
+        meeting.save()  # so the meeting in progress is listed too
+        return {"sessions": store.list_sessions(), "current": meeting.id}
+
+    @app.get("/api/sessions/{session_id}/summary.md")
+    async def meeting_summary(session_id: str):
+        text = await meeting.meeting_summary(check_session(session_id))
+        if text is None:
+            raise HTTPException(404, "Nothing has been recorded in this meeting yet.")
+        headers = {"Content-Disposition": f'attachment; filename="meeting-{session_id}.md"'}
+        return Response(text, media_type="text/markdown; charset=utf-8", headers=headers)
 
     @app.post("/api/profiles/{slug}/prepare")
     async def prepare(slug: str):

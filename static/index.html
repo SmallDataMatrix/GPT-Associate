@@ -39,6 +39,7 @@
       <label class="switch"><input type="checkbox" id="auto" checked> Auto-answer</label>
       <button id="btn-answer" class="primary" title="Answer what was just said (Space)">Answer now</button>
       <button id="btn-improve" title="What to add to the answer I just gave (I)">Improve</button>
+      <button id="btn-summary" title="Download a summary of this meeting (.md), with a Chinese digest">Summary</button>
       <button id="btn-new" title="Save this meeting and start a fresh one">New meeting</button>
     </div>
   </section>
@@ -49,6 +50,8 @@
       <div class="row">
         <label class="inline">Profile <select id="profile-select"></select></label>
         <button id="btn-new-profile" type="button">New profile</button>
+        <label class="inline" title="Reuse another profile's About me, keywords and documents, e.g. a 'My career' profile with your resume and stories">
+          Builds on <select id="f-base"></select></label>
       </div>
       <label>About me
         <textarea id="f-about_me" rows="3" placeholder="Name, current role, experience, strengths, anything I want mentioned"></textarea></label>
@@ -59,12 +62,18 @@
       <label>Keywords (names, products, tech terms: helps transcription)
         <input id="f-keywords" placeholder="e.g. Kubernetes, Acme Corp, Priya Shah"></label>
       <div class="docs">
-        <label class="file-btn">Upload files (PDF, DOCX, TXT, MD)
+        <label class="file-btn">Upload files (PDF, DOCX, TXT, MD): job description, resume, prep notes, past interview transcripts
           <input type="file" id="file-input" multiple accept=".pdf,.docx,.txt,.md,.markdown,.csv,.json"></label>
+        <p class="hint muted">Check each file's type. Past interviews are mined for the questions they asked and how you answered, prep notes for your prepared answers.</p>
         <ul id="doc-list"></ul>
       </div>
-      <label id="brief-wrap" hidden>Brief generated from large documents (you can edit it)
-        <textarea id="f-brief" rows="10"></textarea></label>
+      <div class="row">
+        <label class="inline">Past meetings <select id="session-select"></select></label>
+        <button id="btn-import" type="button" title="Add this meeting's summary and transcript to this profile as a past interview">Add to background</button>
+        <button id="btn-download" type="button" title="Download this meeting's summary and transcript (.md)">Download summary</button>
+      </div>
+      <label id="brief-wrap" hidden>Prep pack: question bank, stories and lessons from past rounds, written from everything above. Read it before the meeting. Your edits are kept until the material changes.
+        <textarea id="f-brief" rows="16"></textarea></label>
       <div class="row">
         <button id="btn-prepare" class="primary" type="button">Save &amp; prepare</button>
         <span id="prepare-status" class="muted"></span>
@@ -91,7 +100,7 @@
   </main>
 
   <form id="ask-form" class="ask">
-    <input id="ask-input" placeholder="Type a question and press Enter" autocomplete="off" enterkeyhint="send">
+    <input id="ask-input" placeholder="Type a question and press Enter for a detailed answer" autocomplete="off" enterkeyhint="send">
     <button type="submit" class="primary">Ask</button>
   </form>
   <div id="toasts" aria-live="assertive"></div>
